@@ -1,0 +1,323 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>V12 – Participantes en Círculo</title>
+  <style>
+    html, body {
+      margin: 0;
+      padding: 0;
+      width: 100%;
+      height: 100%;
+    }
+    body {
+      background: radial-gradient(circle at center, #a2dff7, #0a2f4e);
+      display: flex;
+      justify-content: center;
+      align-items: center;
+      overflow: hidden;
+      position: relative;
+    }
+    .circle {
+      position: relative;
+      width: min(100vmin, 100vw);
+      height: min(100vmin, 100vh);
+    }
+    .dot {
+      position: absolute;
+      width: 23px;
+      height: 7px;
+      border-radius: 3px;
+      background-color: #fff;
+      transition: transform 0.2s ease, box-shadow 0.2s ease, background-color 0.2s ease;
+      cursor: pointer;
+      transform: translate(-50%, -50%) rotate(var(--angle, 0rad));
+    }
+    .dot:hover {
+      z-index: 10;
+      box-shadow: 0 0 6px rgba(255, 255, 255, 0.8);
+    }
+    .dot.selected {
+      background-color: white !important;
+      box-shadow: 0 0 8px 4px white;
+    }
+    .tooltip {
+      position: fixed;
+      background-color: rgba(0, 0, 0, 0.75);
+      color: white;
+      padding: 4px 8px;
+      border-radius: 4px;
+      font-size: 0.75rem;
+      pointer-events: none;
+      opacity: 0;
+      z-index: 1000;
+      transition: opacity 0.2s;
+    }
+    svg {
+      position: absolute;
+      top: 0;
+      left: 0;
+      width: 100%;
+      height: 100%;
+      pointer-events: none;
+    }
+    #voiceCircle {
+      position: absolute;
+      top: 50%;
+      left: 50%;
+      transform: translate(-50%, -50%);
+      z-index: 10;
+      pointer-events: none;
+    }
+  </style>
+  <script src="https://cdn.jsdelivr.net/npm/papaparse@5.4.1/papaparse.min.js"></script>
+</head>
+<body>
+  <button id="playButton" style="position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%); padding: 1rem; font-size: 1rem; background: none; color: white; border: none; border-radius: 500px; cursor: pointer; z-index: 9999; display: block">▶</button> 
+  <canvas id="voiceCircle" width="400" height="400"></canvas>
+  <svg id="connectionCanvas"></svg>
+  <div class="circle" id="circleContainer"></div>
+  <div id="tooltip" class="tooltip"></div>
+  <script>
+let audioCtx, analyser, bufferLength, dataArray;
+let sourceNode = null;
+let isPlaying = false;
+let audioBuffer = null;
+let audioData = null;
+const canvas = document.getElementById("voiceCircle");
+const ctx = canvas.getContext("2d");
+const pulses = [];
+
+const participants = [];
+const dotRefs = {};
+const selectedParticipants = [];
+
+function animate() {
+  requestAnimationFrame(animate);
+  if (!analyser) return;
+  analyser.getByteFrequencyData(dataArray);
+  const avg = dataArray.reduce((a, b) => a + b, 0) / bufferLength;
+  const radius = 20 + avg * 0.15;
+  pulses.push({ radius, alpha: 0.2 });
+  ctx.clearRect(0, 0, canvas.width, canvas.height);
+  for (let i = 0; i < pulses.length; i++) {
+    const pulse = pulses[i];
+    ctx.beginPath();
+    ctx.arc(canvas.width / 2, canvas.height / 2, pulse.radius, 0, Math.PI * 2);
+    ctx.strokeStyle = `rgba(255,255,255,${pulse.alpha})`;
+    ctx.lineWidth = 2;
+    ctx.stroke();
+    pulse.radius += 1;
+    pulse.alpha -= 0.003;
+  }
+  while (pulses.length && pulses[0].alpha <= 0) pulses.shift();
+  ctx.beginPath();
+  ctx.arc(canvas.width / 2, canvas.height / 2, radius, 0, Math.PI * 2);
+  ctx.strokeStyle = "rgba(255,255,255,0.6)";
+  ctx.lineWidth = 2;
+  ctx.stroke();
+}
+
+window.onload = () => {
+  const playBtn = document.getElementById("playButton");
+  if (playBtn) {
+    playBtn.style.display = "block";
+    playBtn.addEventListener("click", () => {
+      playBtn.style.display = "none";
+      if (!isPlaying && audioData) {
+        audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+        analyser = audioCtx.createAnalyser();
+        analyser.fftSize = 256;
+        bufferLength = analyser.frequencyBinCount;
+        dataArray = new Uint8Array(bufferLength);
+        audioCtx.decodeAudioData(audioData).then(decoded => {
+          audioBuffer = decoded;
+          sourceNode = audioCtx.createBufferSource();
+          sourceNode.buffer = audioBuffer;
+          sourceNode.connect(analyser);
+          analyser.connect(audioCtx.destination);
+          sourceNode.start();
+          isPlaying = true;
+          animate();
+        });
+      }
+    });
+  }
+
+  fetch("https://raw.githubusercontent.com/AndresBestiario/audio/main/descarga%20(1).wav")
+    .then(res => res.arrayBuffer())
+    .then(data => { audioData = data; });
+
+  loadParticipants(initVisualization);
+};
+
+function loadParticipants(callback) {
+  Papa.parse("https://raw.githubusercontent.com/AndresBestiario/audio/refs/heads/main/participantes%20(1).csv", {
+    download: true,
+    header: true,
+    complete: function(results) {
+      results.data.forEach(row => {
+        if (row.id && row.name) {
+          participants.push({
+            id: parseInt(row.id),
+            name: row.name,
+            gender: row.gender,
+            age: parseInt(row.age),
+            relations: row.relations ? row.relations.split(",").map(r => parseInt(r.trim())) : []
+          });
+        }
+      });
+      callback();
+    }
+  });
+}
+
+function drawRelations(participant) {
+  const container = document.getElementById("circleContainer");
+  const svg = document.getElementById("connectionCanvas");
+  const source = dotRefs[participant.id];
+  if (!source) return;
+  participant.relations.forEach(relationId => {
+    const target = dotRefs[relationId];
+    if (!target) return;
+    const containerRect = container.getBoundingClientRect();
+    const svgRect = svg.getBoundingClientRect();
+    const offsetX = containerRect.left - svgRect.left;
+    const offsetY = containerRect.top - svgRect.top;
+    const startX = source.x + container.offsetWidth / 2 + offsetX;
+    const startY = source.y + container.offsetHeight / 2 + offsetY;
+    const endX = target.x + container.offsetWidth / 2 + offsetX;
+    const endY = target.y + container.offsetHeight / 2 + offsetY;
+    const centerX = svg.clientWidth / 2;
+    const centerY = svg.clientHeight / 2;
+    const angle1 = Math.atan2(startY - centerY, startX - centerX);
+    const angle2 = Math.atan2(endY - centerY, endX - centerX);
+    const cx1 = centerX + 700 * Math.cos(angle1);
+    const cy1 = centerY + 700 * Math.sin(angle1);
+    const cx2 = centerX + 700 * Math.cos(angle2);
+    const cy2 = centerY + 700 * Math.sin(angle2);
+    const path = document.createElementNS("http://www.w3.org/2000/svg", "path");
+    path.setAttribute("d", `M${startX},${startY} C${cx1},${cy1} ${cx2},${cy2} ${endX},${endY}`);
+    path.setAttribute("stroke", "rgba(255,255,255,0.2)");
+    path.setAttribute("fill", "none");
+    svg.appendChild(path);
+  });
+}
+
+function initVisualization() {
+  const container = document.getElementById("circleContainer");
+  const tooltip = document.getElementById("tooltip");
+  const svg = document.getElementById("connectionCanvas");
+  const rings = 4;
+  let participantIndex = 0;
+  const circleSize = Math.min(container.offsetWidth, container.offsetHeight);
+  const baseRadius = circleSize * 0.25;
+  const ringSpacing = circleSize * 0.05;
+  const dotWidth = circleSize * 0.015;
+
+  for (let r = 0; r < rings; r++) {
+    const radius = baseRadius + r * ringSpacing;
+    const circumference = 2 * Math.PI * radius;
+    const spacing = 0.05;
+    const numDots = Math.floor(circumference / (dotWidth + spacing));
+
+    for (let i = 0; i < numDots; i++) {
+      const angle = (i / numDots) * 2 * Math.PI;
+      const x = radius * Math.cos(angle);
+      const y = radius * Math.sin(angle);
+      const dot = document.createElement("div");
+      dot.className = "dot";
+      dot.style.left = `calc(50% + ${x}px)`;
+      dot.style.top = `calc(50% + ${y}px)`;
+      dot.style.setProperty('--angle', `${angle}rad`);
+
+      if (participantIndex < participants.length) {
+        const participant = participants[participantIndex];
+        participant._x = x;
+        participant._y = y;
+        const relationCount = participant.relations.length;
+        const minColor = [0, 255, 255];
+        const maxColor = [28, 37, 88];
+        const ratio = Math.min((relationCount - 2) / 5, 1);
+        const interpolatedColor = minColor.map((min, i) =>
+          Math.round(min + (maxColor[i] - min) * ratio)
+        );
+        const neonColor = `rgb(${interpolatedColor.join(',')})`;
+        dot.style.backgroundColor = neonColor;
+        dot.dataset.originalColor = neonColor;
+
+        dot.addEventListener("mouseenter", (e) => {
+          drawRelations(participant);
+          participant.relations.forEach(relId => {
+            const relRef = dotRefs[relId];
+            if (relRef && !relRef.dot.classList.contains("selected")) {
+              relRef.dot.style.backgroundColor = "yellow";
+            }
+          });
+          tooltip.textContent = `${participant.name} (${participant.gender}, ${participant.age} años)`;
+          tooltip.style.opacity = 1;
+          tooltip.style.left = `${e.clientX + 10}px`;
+          tooltip.style.top = `${e.clientY + 10}px`;
+        });
+
+        dot.addEventListener("mouseleave", () => {
+          tooltip.style.opacity = 0;
+          if (!dot.classList.contains("selected")) {
+            svg.innerHTML = "";
+            selectedParticipants.forEach(drawRelations);
+          }
+          participant.relations.forEach(relId => {
+            const relRef = dotRefs[relId];
+            if (relRef && !relRef.dot.classList.contains("selected")) {
+              relRef.dot.style.backgroundColor = relRef.dot.dataset.originalColor;
+            }
+          });
+        });
+
+        dot.addEventListener("mousemove", (e) => {
+          tooltip.style.left = `${e.clientX + 10}px`;
+          tooltip.style.top = `${e.clientY + 10}px`;
+        });
+
+        dot.addEventListener("click", () => {
+          const alreadySelected = dot.classList.contains("selected");
+          if (alreadySelected) {
+            dot.classList.remove("selected");
+            const index = selectedParticipants.findIndex(p => p.id === participant.id);
+            if (index !== -1) selectedParticipants.splice(index, 1);
+            participant.relations.forEach(relId => {
+              const relRef = dotRefs[relId];
+              if (relRef) relRef.dot.classList.remove("selected");
+              const relIndex = selectedParticipants.findIndex(p => p.id === relId);
+              if (relIndex !== -1) selectedParticipants.splice(relIndex, 1);
+            });
+          } else {
+            dot.classList.add("selected");
+            selectedParticipants.push(participant);
+            participant.relations.forEach(relId => {
+              const rel = participants.find(p => p.id === relId);
+              const relRef = dotRefs[relId];
+              if (rel && relRef && !relRef.dot.classList.contains("selected")) {
+                relRef.dot.classList.add("selected");
+                selectedParticipants.push(rel);
+                relRef.dot.style.backgroundColor = "yellow";
+              }
+            });
+          }
+          svg.innerHTML = "";
+          selectedParticipants.forEach(drawRelations);
+        });
+
+        dotRefs[participant.id] = { dot, x, y };
+        participantIndex++;
+      } else {
+        dot.style.backgroundColor = "rgba(255, 255, 255, 0.2)";
+      }
+      container.appendChild(dot);
+    }
+  }
+}
+</script>
+</body>
+</html>
